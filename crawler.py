@@ -35,29 +35,6 @@ if APP_TOKEN:
 def _uniq(seq:Iterable[str]) -> list[str]:  #takes list of strings and preserves original order and keeps only first occurence
     return list(OrderedDict.fromkeys(seq))
 
-
-
-def iter_urls_from_json_value (val : Any) -> Iterable[str]:   
-    """Recursively walk through any JSON value and yield all strings found.
- Specifically looks for fields named 'url' in dicts, 
- but also checks nested lists and dicts for string values"""
-    if val is None:
-        return
-    if isinstance(val,str):
-        yield val
-    elif isinstance(val,dict):
-        u=val.get("url")
-        if isinstance(u,str):
-            yield u
-        for v in val.values():
-            yield from iter_urls_from_json_value(v)
-    elif isinstance(val,list):
-        for v in val:
-            yield from iter_urls_from_json_value(v)
-
-
-
-
 def looks_like_target (u:str, prefixes: tuple[str,...])->bool: #checks whether given str looks like one of our target permit links
     if not u:
         return False
