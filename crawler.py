@@ -1,120 +1,178 @@
-import os 
-import logging
-import requests
-import time
-import re
-import urllib.robotparser as robotparser
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
-from collections import OrderedDict
-from typing import Iterable,Any
-import pandas as pd
+import os                   # for file paths, environment variables, directory creation
+import requests             # to send HTTP requests to Seattle's open data API
+import pandas as pd         # for handling Excel files
+import boto3                # for aws services
+from moto import mock_aws as moto_mock  # Moto library fakes AWS services in memory
+
+# Configuration
+
+DATASET_ID = "76t5-zqzr"  # Seattle Building Permits dataset ID on data.seattle.gov
+
+# API endpoint for fetching data (JSON format)
+DATASET_API_URL = f"https://data.seattle.gov/resource/{DATASET_ID}.json"
+
+# Base URL for Seattle’s “LinkToRecord” portal (permits are opened here)
+LINK_HOST = "https://services.seattle.gov/portal/customize/LinkToRecord.aspx"
+
+MAX_PAGES  = int(os.getenv("MAX_PAGES", "2000"))          # stop after this many API pages
+PAGE_LIMIT = int(os.getenv("PAGE_LIMIT", "1000"))         # rows per API call
+TIMEOUT    = int(os.getenv("TIMEOUT", "30"))              # HTTP timeout (seconds)
+SHOW_N     = int(os.getenv("SHOW_N", "50"))               # how many preview links to print
+UA         = "EducationalCrawler"                         # User-Agent string
 
 
-Dataset_id="76t5-zqzr"   # APIendpointID
-V_url=f"https://data.seattle.gov/resource/{Dataset_id}.json"  #json form of API endpoint
-MAX_PAGES = int(os.getenv("MAX_PAGES", "2000"))    #Maximum pages for loop   
-Page_limit=int(os.getenv("PAGE_LIMIT", "1000"))# num of rows to request per page from API
-REQUEST_DELAY = float(os.getenv("REQUEST_DELAY", "1.5")) #pause btw delays
-TIMEOUT = int(os.getenv("TIMEOUT", "30"))   
-SHOW_N = int(os.getenv("SHOW_N", "50"))  #how many links to print
-APP_TOKEN = os.environ.get("SODA_APP_TOKEN", "").strip()  # this looks up the token from env SODA_AOO_TOKEN , if it's not set it'll fallback empty 
-UA = "EducationalCrawler" #useragent
-link_host="https://cosaccela.seattle.gov/portal/customize/LinkToRecord.aspx"   #base url for seattle accela portal
+DEFAULT_EXCEL = r"C:\Users\ragha\Desktop\Project1\crawler\links.xlsx"  #Path for Excel file output
 
-prefixes=("https://services.seattle.gov/portal/customize/linktorecord.aspx","https://cosaccela.seattle.gov/portal/customize/linktorecord.aspx")
+# Mock S3 upload settings 
+MOCK_BUCKET = "my-offline-bucket"                 # bucket name (all lowercase)
+MOCK_KEY    = "project1/outputs/links.xlsx"       # “folder/key” inside the bucket
 
 
+
+# Requests Session setup
+# Make one session object and reuse it 
 session = requests.Session()
+
+# Add User-Agent header
 session.headers.update({"User-Agent": f"{UA}/1.0 (+contact: veera@gmail.com)"})
-if APP_TOKEN:
-    session.headers.update({"X-App-Token": APP_TOKEN}) #it'll make highervolume queries without hitting anonymous rate limits
-    
 
+# Function: collect_all_links_from_permitnums
 
-def _uniq(seq:Iterable[str]) -> list[str]:  #takes list of strings and preserves original order and keeps only first occurence
-    return list(OrderedDict.fromkeys(seq))
-
-def looks_like_target (u:str, prefixes: tuple[str,...])->bool: #checks whether given str looks like one of our target permit links
-    if not u:
-        return False
-    low = u.lower().strip()
-    return "altid=" in low and any(low.startswith(p.lower()) for p in prefixes)
-"""return true only if url contains altid and and strtas with one known prefixes"""
-def normalize_prefixes(V_url:str)->tuple[str,...]:
-    """take base url and produce multiple safe variants for matching 
-    useful bcoz sometimes links differ by case or hht/https scheme"""
-    p=V_url.rstrip("/")  #remove any slash(/) so comparsions are consistent
-    variants = {
-        base,
-        base.lower(),
-        base.replace("http://", "https://"),
-        base.replace("https://", "http://"),
-        base.replace("HTTPS://", "https://"),
-    }
-    return tuple(v.lower().rstrip("/") for v in variants)
-"""return them as a tuple , all lowercasedand withouttrailing slashes"""
-
-
-def collect_all_links_from_permitnums(dataset_api_url: str) -> list[str]:
+def collect_all_links_from_permitnums() -> list[str]:
     """
-    Page through the Seattle permits dataset and build a LinkToRecord URL
-    for every row using its 'permitnum' field.
-    Returns a list of full portal links.
+    Pages through the Seattle permits dataset.
+    For every record, extracts the permit number and builds a LinkToRecord URL.
+    Returns a list of portal links.
     """
-    links = []  #stores final list of urls
-    offset = 0  #start reading rows at beginning
-    while True:
+    links: list[str] = []    # store all permit URLs here
+    offset = 0               # API offset --like a cursor, moves forward
+    pages_seen = 0           
+
+    while True:  # loop until no rows left or max pages reached
+        if pages_seen >= MAX_PAGES:
+            break
+        pages_seen += 1
+
+        # API query parameters: only ask for "permitnum"
         params = {
-            "$select": "permitnum",   # only fetch permitnum field
-            "$limit": str(Page_limit), #num of rows per page 
-            "$offset": str(offset)     # where to start in dataset
+            "$select": "permitnum",        # only need this column
+            "$limit": str(PAGE_LIMIT),     # number of rows per call
+            "$offset": str(offset),        # skip rows already seen
         }
-        r = session.get(dataset_api_url, params=params, timeout=TIMEOUT)   #mak the request to dataset API
-        r.raise_for_status()  #raise for error if request failed
-        rows = r.json()   #parse JSON response into python objects
-        if not rows:  # stop if no rows returned
+
+        # Send request to Seattle Open Data API
+        r = session.get(DATASET_API_URL, params=params, timeout=TIMEOUT)
+        r.raise_for_status()   # error if response isn’t 200 OK
+        rows = r.json()        # parse JSON response
+
+        if not rows:  # stop if no data
             break
 
-        for row in rows:   #for each row returned  get permitnum field
+        # Build LinkToRecord URL for each permit number
+        for row in rows:
             alt = row.get("permitnum")
             if alt:
-                links.append(f"{link_host}?altId={alt}")  #build the full acela portallink with altid
+                links.append(f"{LINK_HOST}?altId={alt}")
 
-        if len(rows) < Page_limit:
+        # Stop if we reached the last page (fewer rows than limit)
+        if len(rows) < PAGE_LIMIT:
             break
-        offset += Page_limit
+
+        # Otherwise move the offset forward and loop again
+        offset += PAGE_LIMIT
 
     return links
 
 
-
-
-def crawl_and_print_target_urls(dataset_api_url: str, show_n: int = 50, excel_file: str = "links.xlsx") -> None:
-    """crawls the dataset api to build permit portal links and then print preview 
+def upload_excel_to_mock_s3(excel_file: str,
+                            bucket: str = MOCK_BUCKET,
+                            key: str = MOCK_KEY) -> None:
     """
-    try:
-        links = collect_all_links_from_permitnums(dataset_api_url)
-    except Exception as e:
-        print(f"[error] loading failed:{e}")
-        links = []
+    OFFLINE S3 upload using Moto.
+    - Creates a fake S3 bucket
+    - Uploads the Excel file
+    and  Verifies upload by checking file size
+    """
+    if not os.path.exists(excel_file):  #check if excel file exists locally
+        raise FileNotFoundError(f"File not found: {excel_file}")  # If not found, stop execution and raise error
 
-    print(f"Source used: {dataset_api_url}")
+    print("\n[mock-upload] Uploading Excel to mock S3 (Moto)...")
+
+    # Moto replaces all AWS S3 calls with an in-memory fake
+    with moto_mock():
+        # Initialize fake S3 client
+        s3 = boto3.client("s3", region_name="us-east-1")
+
+        # Create fake bucket to store objects
+        s3.create_bucket(Bucket=bucket)
+
+        # Upload file into fake S3 bucket at given key
+        s3.upload_file(
+            Filename=excel_file, #local path to file
+            Bucket=bucket,   #fake bucket name
+            Key=key,         # "path/filename" inside bucket
+            ExtraArgs={
+                "ContentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            },
+        )
+
+        #    Verification step 
+        # Fetch metadata for uploaded object
+        head = s3.head_object(Bucket=bucket, Key=key)  #Ask S3 for object metadata (head request)
+        remote_size = head["ContentLength"]         # Extract the uploaded file size from fake S3.
+        local_size = os.path.getsize(excel_file)    # Get the actual local file size from disk.
+
+        print(f"[mock-upload] remote size = {remote_size} | local size = {local_size}")  #Print both sizes so user can confirm upload integrity.
+
+        # Compare size ---- If equal → upload successful. If not → something went wrong.
+        if remote_size == local_size:
+            print("[mock-upload] ✔ size matches")
+        else:
+            print("[mock-upload] ✖ size mismatch")
+# Function: crawl_and_print_target_urls
+
+def crawl_and_print_target_urls(show_n: int = SHOW_N, excel_file: str = DEFAULT_EXCEL) -> None:
+    """
+    - Calls the API to collect permit links
+    - Prints first few links
+    - Saves all links to Excel
+    - Uploads that Excel file to fake S3 (Moto)
+    """
+    try:  #Call the API function to collect all permit links
+        links = collect_all_links_from_permitnums()
+    except Exception as e:   #If something goes wrong like network error or any errors, catch and log it
+        print(f"[error] loading failed: {e}")
+        links = []   # fall back to empty list so program continues
+        
+#  Print summary info: which dataset was used + total number of links found
+    print(f"Source used: {DATASET_API_URL}")  
     print(f"Built {len(links)} LinkToRecord URLs\n")
 
-    to_show = links[:show_n]  # how many links to print for preview
-    if to_show:
+    # Print a preview of first N links
+    to_show = links[:show_n]   ## slice list to only show first few
+    if to_show:     ## only print if list isn’t empty
         print(f"First {len(to_show)} links:")
-        for u in to_show:
+        for u in to_show:   ## print one link per line
             print(u)
-    if links:
+
+            
+# Save links to Excel file
+    if links:  
+        # Put all links in a DataFrame
         df = pd.DataFrame(links, columns=["LinkToRecord"])
-        df.to_excel(excel_file, index=False)
+
+        # Ensure the folder exists, then save Excel
+        os.makedirs(os.path.dirname(excel_file), exist_ok=True)
+        df.to_excel(excel_file, index=False)   # Write DataFrame to Excel file on disk
         print(f"\nSaved {len(links)} links to {excel_file}")
+
+        # Upload Excel to mock S3 (offline)
+        upload_excel_to_mock_s3(excel_file)
     else:
-        print("\nNo links to save.")
+        print("\nNo links to save.")   # If no links were collected at all
 
-start_url = "https://data.seattle.gov/Built-Environment/Building-Permits/76t5-zqzr/data_preview"  
-V_URL="https://services.seattle.gov/portal/customize/LinkToRecord.aspx"
+# Script entrypoint
 
-crawl_and_print_target_urls(V_url, show_n=50)
+if __name__ == "__main__":
+    # If this file is run directly (not imported), start the crawl
+    crawl_and_print_target_urls()
