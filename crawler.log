@@ -1,0 +1,18 @@
+2025-08-26 17:46:04,670 [INFO] crawler: last page detected (rows=557 < limit=1000)
+2025-08-26 17:46:04,673 [INFO] crawler: crawl finished with 183557 links collected.
+2025-08-26 17:46:04,675 [INFO] crawler: Source used:https://data.seattle.gov/resource/76t5-zqzr.json
+2025-08-26 17:46:04,675 [INFO] crawler: Built 183557 LinkToRecord URLs.
+2025-08-26 17:46:24,541 [INFO] crawler: Saved 183557 links to C:\Users\ragha\Desktop\Project1\crawler\links.xlsx
+2025-08-26 17:46:24,543 [INFO] crawler: Uploading Excel to mock S3 (Moto)... file=C:\Users\ragha\Desktop\Project1\crawler\links.xlsx bucket=my-offline-bucket key=project1/outputs/links.xlsx
+2025-08-26 17:46:24,734 [INFO] botocore.credentials: Found credentials in environment variables.
+2025-08-26 17:46:26,237 [INFO] crawler: Mock upload complete. remote=1738289 bytes | local=1738289 bytes
+2025-08-26 17:46:26,238 [INFO] crawler: Upload verification: size matches ✔
+2025-08-27 10:14:29,476 [INFO] crawler: last page detected (rows=583 < limit=1000)
+2025-08-27 10:14:29,477 [INFO] crawler: crawl finished with 183583 links collected.
+2025-08-27 10:14:29,478 [INFO] crawler: Source used:https://data.seattle.gov/resource/76t5-zqzr.json
+2025-08-27 10:14:29,478 [INFO] crawler: Built 183583 LinkToRecord URLs.
+2025-08-27 10:14:32,439 [INFO] crawler: Saved 183583 links to C:\Users\ragha\Desktop\Project1\crawler\links.xlsx
+2025-08-27 10:14:32,439 [INFO] crawler: Uploading Excel to mock S3 (Moto)... file=C:\Users\ragha\Desktop\Project1\crawler\links.xlsx bucket=my-offline-bucket key=project1/outputs/links.xlsx
+2025-08-27 10:14:32,533 [INFO] botocore.credentials: Found credentials in environment variables.
+2025-08-27 10:14:33,751 [INFO] crawler: Mock upload complete. remote=1738544 bytes | local=1738544 bytes
+2025-08-27 10:14:33,751 [INFO] crawler: Upload verification: size matches ✔
